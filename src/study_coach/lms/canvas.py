@@ -13,7 +13,18 @@ from html.parser import HTMLParser
 
 import httpx
 
-from .base import Announcement, Assignment, Attachment, Course, CourseFile, DownloadedFile, Feedback, GradedItem
+from .base import (
+    Announcement,
+    Assignment,
+    Attachment,
+    Course,
+    CourseFile,
+    CoursePage,
+    DownloadedFile,
+    Feedback,
+    GradedItem,
+    Syllabus,
+)
 
 # Only documents Study Coach can read are ever downloaded; videos, audio and
 # everything else are refused from their metadata, before any bytes move.
@@ -195,6 +206,7 @@ class CanvasClient:
                         submitted=submission.get("workflow_state") in {"submitted", "graded"},
                         description=html_to_text(a.get("description"), limit=600),
                         url=a.get("html_url"),
+                        attachments=file_links(a.get("description"), course.id) or None,
                     )
                 )
         return sorted(results, key=lambda a: a.due_at)
@@ -243,9 +255,12 @@ class CanvasClient:
             rubric=rubric,
         )
 
-    def syllabus(self, course_id: int) -> str:
-        course = self._get(f"/courses/{course_id}", [("include[]", "syllabus_body")])
-        return html_to_text(course.get("syllabus_body")) or "No syllabus posted in Canvas."
+    def syllabus(self, course_id: int) -> Syllabus:
+        body = self._get(f"/courses/{course_id}", [("include[]", "syllabus_body")]).get("syllabus_body")
+        return Syllabus(
+            text=html_to_text(body) or "No syllabus posted in Canvas.",
+            attachments=file_links(body, course_id) or None,
+        )
 
     def announcements(self, course_ids: list[int], days: int = 14) -> list[Announcement]:
         if not course_ids:
@@ -256,36 +271,71 @@ class CanvasClient:
         # Without end_date Canvas stops 28 days after start_date, hiding recent posts.
         params.append(("end_date", (now + timedelta(days=1)).date().isoformat()))
         raw = self._get_all("/announcements", params)
-        return [
-            Announcement(
-                course_id=int(a.get("context_code", "course_0").split("_")[-1]),
-                title=a.get("title", ""),
-                posted_at=_parse_dt(a.get("posted_at")),
-                message=html_to_text(a.get("message"), limit=1000),
+        results = []
+        for a in raw:
+            course_id = int(a.get("context_code", "course_0").split("_")[-1])
+            links = file_links(a.get("message"), course_id)
+            # Files attached to the post itself, not linked in its text.
+            linked = {f.id for f in links}
+            links += [
+                Attachment(id=f["id"], name=f.get("display_name") or f.get("filename") or f"file {f['id']}")
+                for f in a.get("attachments") or []
+                if f.get("id") and f["id"] not in linked
+            ]
+            results.append(
+                Announcement(
+                    course_id=course_id,
+                    title=a.get("title", ""),
+                    posted_at=_parse_dt(a.get("posted_at")),
+                    message=html_to_text(a.get("message"), limit=1000),
+                    attachments=links or None,
+                )
             )
-            for a in raw
-        ]
+        return results
 
-    def module_files(self, course_id: int) -> list[CourseFile]:
-        # Files are listed through Modules because many classes block the Files tab (403).
-        modules = self._get_all(f"/courses/{course_id}/modules", [("include[]", "items")])
-        files = []
-        for m in modules:
+    def _module_items(self, course_id: int) -> list[tuple[str, dict]]:
+        """(module name, item) for every module item, in course order."""
+        out = []
+        for m in self._get_all(f"/courses/{course_id}/modules", [("include[]", "items")]):
             # Canvas leaves out "items" when a module is too large to inline.
             items = m.get("items")
             if items is None:
                 items = self._get_all(f"/courses/{course_id}/modules/{m['id']}/items")
-            for item in items:
-                if item.get("type") == "File" and item.get("content_id"):
-                    files.append(
-                        CourseFile(
-                            id=item["content_id"],
-                            course_id=course_id,
-                            name=item.get("title", ""),
-                            module=m.get("name", ""),
-                        )
-                    )
-        return files
+            out += [(m.get("name", ""), item) for item in items]
+        return out
+
+    def course_pages(self, course_id: int) -> list[CoursePage]:
+        # Read through Modules: the Pages list is turned off (404) in many classes.
+        pages, seen = [], set()
+        for module, item in self._module_items(course_id):
+            if item.get("type") == "Page" and item.get("page_url") and item["page_url"] not in seen:
+                seen.add(item["page_url"])
+                pages.append(
+                    CoursePage(course_id=course_id, page_url=item["page_url"], title=item.get("title", ""), module=module)
+                )
+        return pages
+
+    def page(self, course_id: int, page_url: str) -> CoursePage:
+        p = self._get(f"/courses/{course_id}/pages/{page_url}")
+        title = p.get("title", page_url)
+        if p.get("locked_for_user"):
+            reason = html_to_text(p.get("lock_explanation")) or "the instructor hasn't made it available yet"
+            return CoursePage(course_id=course_id, page_url=page_url, title=title, text=f"Locked: {reason}")
+        return CoursePage(
+            course_id=course_id,
+            page_url=page_url,
+            title=title,
+            text=html_to_text(p.get("body")),
+            attachments=file_links(p.get("body"), course_id) or None,
+        )
+
+    def module_files(self, course_id: int) -> list[CourseFile]:
+        # Files are listed through Modules because many classes block the Files tab (403).
+        return [
+            CourseFile(id=item["content_id"], course_id=course_id, name=item.get("title", ""), module=module)
+            for module, item in self._module_items(course_id)
+            if item.get("type") == "File" and item.get("content_id")
+        ]
 
     def download_file(self, course_id: int, file_id: int) -> DownloadedFile:
         meta = self._get(f"/courses/{course_id}/files/{file_id}")

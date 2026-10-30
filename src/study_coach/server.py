@@ -111,7 +111,9 @@ def list_courses() -> list[dict]:
 @mcp.tool()
 def get_upcoming_assignments(days: int = 7) -> list[dict]:
     """Assignments due in the next `days` days across all active courses,
-    soonest first, including whether each has been submitted."""
+    soonest first, including whether each has been submitted. `attachments`
+    lists files the instructions link to (handouts, starter code); open a PDF
+    one with read_pdf, using its course_id if one is given."""
     cfg = _config()
     return _dump(_canvas(cfg).upcoming_assignments(days))
 
@@ -130,22 +132,36 @@ def get_submission_feedback(course_id: int, assignment_id: int) -> dict:
 
 
 @mcp.tool()
-def get_syllabus(course_id: int) -> str:
-    """The course syllabus as plain text (grade weights, policies, schedule)."""
-    return _canvas(_config()).syllabus(course_id)
+def get_syllabus(course_id: int) -> dict:
+    """The course syllabus as plain text (grade weights, policies, schedule),
+    plus `attachments`: files it links to, readable with read_pdf."""
+    return _canvas(_config()).syllabus(course_id).model_dump(mode="json", exclude_none=True)
 
 
 @mcp.tool()
 def list_announcements(days: int = 14, course_id: int | None = None) -> list[dict]:
-    """Recent course announcements (moved due dates, exam topics, etc.).
-    Omit course_id to include every active course."""
+    """Recent course announcements (moved due dates, exam topics, etc.), with
+    any files they attach or link. Omit course_id to include every active course."""
     cfg = _config()
     canvas = _canvas(cfg)
     ids = [course_id] if course_id else [c.id for c in canvas.list_courses()]
     return _dump(canvas.announcements(ids, days))
 
 
-# -- Course files ------------------------------------------------------------
+# -- Course pages and files ----------------------------------------------------
+
+
+@mcp.tool()
+def list_course_pages(course_id: int) -> list[dict]:
+    """Pages a course links from its Modules (lecture notes, instructions,
+    reading lists). Open one with get_course_page."""
+    return _dump(_canvas(_config()).course_pages(course_id))
+
+
+@mcp.tool()
+def get_course_page(course_id: int, page_url: str) -> dict:
+    """One course page as plain text, plus `attachments`: files it links to."""
+    return _canvas(_config()).page(course_id, page_url).model_dump(mode="json", exclude_none=True)
 
 
 @mcp.tool()

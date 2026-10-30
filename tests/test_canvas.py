@@ -204,3 +204,71 @@ def test_file_links_handles_empty_html():
     from study_coach.lms.canvas import file_links
 
     assert file_links(None, 7) == [] and file_links("<p>No links</p>", 7) == []
+
+
+def test_assignments_list_files_their_instructions_link():
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    description = f'<p>Use <a href="{BASE}/courses/7/files/31/download">Starter.java</a></p>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/courses"):
+            return httpx.Response(200, json=[{"id": 7, "name": "Algorithms"}])
+        return httpx.Response(200, json=[
+            {"id": 1, "name": "Lab 4", "due_at": soon, "description": description},
+            {"id": 2, "name": "Lab 5", "due_at": soon, "description": "<p>No files</p>"},
+        ])
+
+    lab4, lab5 = make_client(handler).upcoming_assignments(days=7)
+    assert [(a.id, a.name) for a in lab4.attachments] == [(31, "Starter.java")]
+    assert lab4.description == "Use Starter.java"
+    assert lab5.attachments is None  # left out, not an empty list (BUGFIXES #13)
+
+
+def test_syllabus_returns_text_and_linked_files():
+    body = f'<p>Schedule: <a href="{BASE}/courses/7/files/40?wrap=1">Calendar.pdf</a></p>'
+    client = make_client(lambda request: httpx.Response(200, json={"syllabus_body": body}))
+    syllabus = client.syllabus(7)
+    assert syllabus.text == "Schedule: Calendar.pdf"
+    assert [a.id for a in syllabus.attachments] == [40]
+
+
+def test_announcements_include_linked_and_attached_files_once():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{
+            "context_code": "course_7", "title": "Exam review", "posted_at": None,
+            "message": f'<a href="{BASE}/courses/7/files/51">Review.pdf</a>',
+            "attachments": [{"id": 51, "display_name": "Review.pdf"}, {"id": 52, "display_name": "Answers.pdf"}],
+        }])
+
+    [post] = make_client(handler).announcements([7], days=14)
+    assert [(a.id, a.name) for a in post.attachments] == [(51, "Review.pdf"), (52, "Answers.pdf")]
+
+
+def test_pages_are_found_through_modules_and_return_attachments():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/modules"):
+            return httpx.Response(200, json=[{"id": 1, "name": "Week 3", "items": [
+                {"type": "Page", "title": "Normalization notes", "page_url": "normalization"},
+                {"type": "Page", "title": "Normalization notes", "page_url": "normalization"},  # linked twice
+            ]}])
+        assert request.url.path.endswith("/pages/normalization")
+        return httpx.Response(200, json={
+            "title": "Normalization notes",
+            "body": f'<p>See <a href="{BASE}/courses/7/files/61">3NF examples.pdf</a></p>',
+        })
+
+    client = make_client(handler)
+    [listed] = client.course_pages(7)
+    assert (listed.page_url, listed.module) == ("normalization", "Week 3")
+    page = client.page(7, "normalization")
+    assert page.text == "See 3NF examples.pdf"
+    assert [a.name for a in page.attachments] == ["3NF examples.pdf"]
+
+
+def test_locked_page_says_why_instead_of_showing_content():
+    client = make_client(lambda request: httpx.Response(200, json={
+        "title": "Exam 2 key", "locked_for_user": True, "lock_explanation": "Unlocks <b>Dec 5</b>.",
+        "body": f'<a href="{BASE}/courses/7/files/70">key.pdf</a>',
+    }))
+    page = client.page(7, "exam-2-key")
+    assert page.text == "Locked: Unlocks Dec 5." and page.attachments is None

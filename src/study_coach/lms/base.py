@@ -9,6 +9,16 @@ from typing import Protocol
 from pydantic import BaseModel
 
 
+class Attachment(BaseModel):
+    """A Canvas file linked from an assignment, page, syllabus or announcement."""
+
+    id: int
+    name: str
+    # Only set when the link points at another course's file, so read_pdf can
+    # ask Canvas for it in the right place.
+    course_id: int | None = None
+
+
 class Course(BaseModel):
     id: int
     name: str
@@ -26,6 +36,7 @@ class Assignment(BaseModel):
     submitted: bool = False
     description: str | None = None
     url: str | None = None
+    attachments: list[Attachment] | None = None
 
 
 class GradedItem(BaseModel):
@@ -51,16 +62,23 @@ class Announcement(BaseModel):
     title: str
     posted_at: datetime | None
     message: str
+    attachments: list[Attachment] | None = None
 
 
-class Attachment(BaseModel):
-    """A Canvas file linked from an assignment, page, syllabus or announcement."""
+class Syllabus(BaseModel):
+    text: str
+    attachments: list[Attachment] | None = None
 
-    id: int
-    name: str
-    # Only set when the link points at another course's file, so read_pdf can
-    # ask Canvas for it in the right place.
-    course_id: int | None = None
+
+class CoursePage(BaseModel):
+    """A Canvas page, found through Modules because the Pages list is often off."""
+
+    course_id: int
+    page_url: str
+    title: str
+    module: str | None = None
+    text: str | None = None
+    attachments: list[Attachment] | None = None
 
 
 class CourseFile(BaseModel):
@@ -88,9 +106,13 @@ class LmsProvider(Protocol):
 
     def feedback(self, course_id: int, assignment_id: int) -> Feedback: ...
 
-    def syllabus(self, course_id: int) -> str: ...
+    def syllabus(self, course_id: int) -> Syllabus: ...
 
     def announcements(self, course_ids: list[int], days: int) -> list[Announcement]: ...
+
+    def course_pages(self, course_id: int) -> list[CoursePage]: ...
+
+    def page(self, course_id: int, page_url: str) -> CoursePage: ...
 
     def module_files(self, course_id: int) -> list[CourseFile]: ...
 

@@ -11,11 +11,12 @@ Only Canvas is required. Calendar feeds, Notion and calendar booking are optiona
 | Tool | What it does |
 |---|---|
 | `list_courses` | Active courses, current scores, and your notes on each |
-| `get_upcoming_assignments` | What's due in the next N days |
+| `get_upcoming_assignments` | What's due in the next N days, with files the instructions link to |
 | `get_grades` | Scores per assignment for a course |
 | `get_submission_feedback` | Instructor comments and rubric scores |
-| `get_syllabus` | Syllabus as plain text |
-| `list_announcements` | Recent announcements |
+| `get_syllabus` | Syllabus as plain text, with linked files |
+| `list_announcements` | Recent announcements, with attached and linked files |
+| `list_course_pages`, `get_course_page` | Course pages from Modules (notes, instructions) and the files they link |
 | `list_course_files` | Files linked from a course's Modules (works even when the Files tab is hidden) |
 | `read_pdf` | Text of a course PDF, page by page, without you uploading it |
 | `view_pdf_pages` | Images of PDF pages, for diagrams, charts and scanned handouts |
