@@ -23,6 +23,7 @@ read the test to see the bug pinned down.
 | 14 | Server wouldn't start on Windows | High | Cross-platform review | CI on Windows (once pushed to GitHub) |
 | 15 | `init` printed a command Claude can't run | High | Checking item 14 | `test_server_command_is_an_absolute_path_next_to_python` |
 | 16 | Server wouldn't start from an iCloud folder | High | Checking item 15 | Manual (`import study_coach` works) |
+| 17 | Secret URLs written to Claude Desktop's log | High | Live test of PDF reading | `test_secret_urls_are_not_written_to_the_log` |
 
 ---
 
@@ -220,6 +221,36 @@ doesn't sync. The README's Troubleshooting section covers this.
 set *after* installation, by iCloud. Bugs that depend on the environment, not the
 code, are why "it works on my machine" isn't enough, and why CI runs on clean
 machines.
+
+## 17. Secret URLs were written to Claude Desktop's log file
+
+**What you'd see:** lines like `HTTP Request: GET https://...` in
+`~/Library/Logs/Claude/mcp-server-study-coach.log`, one for every request the
+server made, including your private calendar feed URL.
+
+**Why it matters:** a calendar feed URL works like a password, because anyone
+who has it can read your whole calendar (see #5). Canvas file download links
+are also signed and short-lived. Logs get pasted into bug reports and support
+chats, so secrets don't belong in them.
+
+**Why:** two libraries combined:
+1. `httpx` logs every request's full URL at the `INFO` level.
+2. The MCP SDK turns on `INFO` logging and sends it to stderr, which Claude
+   Desktop saves to that log file.
+
+The Canvas token itself was never logged, because it travels in a header, not
+in the URL.
+
+**Fix:** set the `httpx` logger to `WARNING` when the server starts
+([`server.py`](src/study_coach/server.py)), so routine requests aren't logged
+but real problems still are.
+
+**Verified by:** a test that makes a request with a fake secret URL and checks
+the log. It fails without the fix and passes with it. A live run against Canvas
+logged 0 request lines afterward.
+
+**Lesson:** found by watching the output of a real run, not by the tests.
+Check what your program writes to logs, not just what it returns.
 
 ---
 

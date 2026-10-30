@@ -36,3 +36,15 @@ def test_course_profile_shows_in_student_profile():
 def test_canvas_tools_explain_missing_token():
     with pytest.raises(RuntimeError, match="CANVAS_TOKEN"):
         server.list_courses()
+
+
+def test_secret_urls_are_not_written_to_the_log(caplog):
+    import logging
+
+    import httpx
+
+    caplog.set_level(logging.INFO)
+    secret = "https://calendar.example.com/private-abc123/basic.ics"
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+    client.get(secret)
+    assert "private-abc123" not in caplog.text

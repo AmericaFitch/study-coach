@@ -4,6 +4,7 @@ that edit the user's own local config."""
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal
@@ -20,6 +21,11 @@ mcp = MCPServer("study-coach")
 
 # One connection pool for the life of the server instead of one per tool call.
 _http = httpx.Client(timeout=20.0, follow_redirects=True)
+
+# httpx logs every request URL at INFO, and the MCP server sends INFO logs to
+# Claude Desktop's log file. Calendar feed URLs and file download links are
+# secrets, so keep them out of it.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _config() -> Config:
