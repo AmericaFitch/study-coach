@@ -11,7 +11,7 @@ Only Canvas is required. Calendar feeds, Notion and calendar booking are optiona
 | Tool | What it does |
 |---|---|
 | `list_courses` | Active courses, current scores, and your notes on each |
-| `get_upcoming_assignments` | What's due in the next N days, with files the instructions link to |
+| `get_upcoming_assignments` | What's due in the next N days (or already past, with `include_past`), with files the instructions link to |
 | `get_grades` | Scores per assignment for a course |
 | `get_submission_feedback` | Instructor comments and rubric scores |
 | `get_syllabus` | Syllabus as plain text, with linked files |

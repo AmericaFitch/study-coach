@@ -200,18 +200,19 @@ class CanvasClient:
             )
         return courses
 
-    def upcoming_assignments(self, days: int = 7) -> list[Assignment]:
+    def upcoming_assignments(self, days: int = 7, include_past: bool = False) -> list[Assignment]:
         now = datetime.now(timezone.utc)
         cutoff = now + timedelta(days=days)
+        params = [("order_by", "due_at"), ("include[]", "submission")]
+        if not include_past:
+            # Let Canvas drop past assignments instead of downloading the whole term.
+            params.append(("bucket", "future"))
         results = []
         for course in self.list_courses():
-            raw = self._get_all(
-                f"/courses/{course.id}/assignments",
-                [("bucket", "future"), ("order_by", "due_at"), ("include[]", "submission")],
-            )
+            raw = self._get_all(f"/courses/{course.id}/assignments", params)
             for a in raw:
                 due = _parse_dt(a.get("due_at"))
-                if due is None or not (now <= due <= cutoff):
+                if due is None or due > cutoff or (due < now and not include_past):
                     continue
                 submission = a.get("submission") or {}
                 results.append(

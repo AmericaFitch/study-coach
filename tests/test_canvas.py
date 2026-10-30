@@ -321,3 +321,26 @@ def test_locked_page_says_why_instead_of_showing_content():
     }))
     page = client.page(7, "exam-2-key")
     assert page.text == "Locked: Unlocks Dec 5." and page.attachments is None
+
+
+def test_past_assignments_only_appear_when_asked_for():
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(days=20)).isoformat()
+    soon = (now + timedelta(days=2)).isoformat()
+    later = (now + timedelta(days=30)).isoformat()
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/courses"):
+            return httpx.Response(200, json=[{"id": 7, "name": "Algorithms"}])
+        seen.append(request.url.params.get("bucket"))
+        return httpx.Response(200, json=[
+            {"id": 5, "name": "Assignment 5", "due_at": past},
+            {"id": 6, "name": "Assignment 6", "due_at": soon},
+            {"id": 7, "name": "Final project", "due_at": later},
+        ])
+
+    client = make_client(handler)
+    assert [a.name for a in client.upcoming_assignments(days=7)] == ["Assignment 6"]
+    assert [a.name for a in client.upcoming_assignments(days=7, include_past=True)] == ["Assignment 5", "Assignment 6"]
+    assert seen == ["future", None]  # the past is only downloaded when asked for

@@ -109,13 +109,17 @@ def list_courses() -> list[dict]:
 
 
 @mcp.tool()
-def get_upcoming_assignments(days: int = 7) -> list[dict]:
+def get_upcoming_assignments(days: int = 7, include_past: bool = False) -> list[dict]:
     """Assignments due in the next `days` days across all active courses,
     soonest first, including whether each has been submitted. `attachments`
     lists files the instructions link to (handouts, starter code); open a PDF
-    one with read_pdf, using its course_id if one is given."""
+    one with read_pdf, using its course_id if one is given.
+
+    Set include_past=True to also get assignments whose due date has passed
+    (this term's earlier work), e.g. when the student asks about "Assignment 5"
+    or wants to review graded work."""
     cfg = _config()
-    return _dump(_canvas(cfg).upcoming_assignments(days))
+    return _dump(_canvas(cfg).upcoming_assignments(days, include_past))
 
 
 @mcp.tool()
