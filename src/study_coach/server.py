@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 
 from .calendars import IcsFeedCalendar
+from .documents import page_count, page_texts, parse_pages, render_pages
 from .config import Blackout, Config, CourseProfile, Weekday, canvas_token, load_config, save_config
+from .lms.base import DownloadedFile
 from .lms.canvas import CanvasClient
 from .scheduling import Interval, StudyBlock, StudyTask, find_free_slots, plan_to_ics, propose_blocks
 
@@ -26,6 +28,16 @@ _http = httpx.Client(timeout=20.0, follow_redirects=True)
 # Claude Desktop's log file. Calendar feed URLs and file download links are
 # secrets, so keep them out of it.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Recent downloads, so reading a PDF and then viewing its pages fetches it once.
+_files: dict[tuple[int, int], DownloadedFile] = {}
+_FILE_CACHE_SIZE = 3
+
+# Keeps one read_pdf result small enough to leave room in Claude's context.
+PDF_TEXT_BUDGET = 40_000
+MAX_PAGES_PER_VIEW = 5
+# Fewer characters than this on a page usually means a diagram or a scan.
+LITTLE_TEXT = 40
 
 
 def _config() -> Config:
@@ -65,6 +77,17 @@ def _busy(cfg: Config, start: datetime, end: datetime) -> list[Interval]:
 
 def _dump(items) -> list[dict]:
     return [i.model_dump(mode="json", exclude_none=True) for i in items]
+
+
+def _pdf(course_id: int, file_id: int) -> DownloadedFile:
+    key = (course_id, file_id)
+    if key not in _files:
+        # download_file refuses non-PDFs (videos included) before downloading anything.
+        f = _canvas(_config()).download_file(course_id, file_id)
+        if len(_files) >= _FILE_CACHE_SIZE:
+            _files.pop(next(iter(_files)))  # dicts keep insertion order, so this is the oldest
+        _files[key] = f
+    return _files[key]
 
 
 # -- Canvas -----------------------------------------------------------------
@@ -120,6 +143,60 @@ def list_announcements(days: int = 14, course_id: int | None = None) -> list[dic
     canvas = _canvas(cfg)
     ids = [course_id] if course_id else [c.id for c in canvas.list_courses()]
     return _dump(canvas.announcements(ids, days))
+
+
+# -- Course files ------------------------------------------------------------
+
+
+@mcp.tool()
+def list_course_files(course_id: int) -> list[dict]:
+    """Files linked from a course's Modules (slides, readings, handouts), with
+    the module each is in. Use a file's id with read_pdf or view_pdf_pages."""
+    return _dump(_canvas(_config()).module_files(course_id))
+
+
+@mcp.tool()
+def read_pdf(course_id: int, file_id: int, pages: str | None = None) -> dict:
+    """Text of a course PDF, page by page. `pages` is like "1-5,9" (default:
+    all pages, stopping early if the text gets long; continue from `next_page`).
+
+    Pages listed in `pages_with_little_text` are probably diagrams or scans:
+    call view_pdf_pages on them to see what's actually there.
+    """
+    f = _pdf(course_id, file_id)
+    texts = page_texts(f.data)
+    wanted = parse_pages(pages, len(texts))
+    out, used = [], 0
+    for number in wanted:
+        text = texts[number - 1]
+        if out and used + len(text) > PDF_TEXT_BUDGET:
+            break
+        out.append({"page": number, "text": text})
+        used += len(text)
+    result = {
+        "name": f.name,
+        "page_count": len(texts),
+        "pages": out,
+        "pages_with_little_text": [p["page"] for p in out if len(p["text"]) < LITTLE_TEXT],
+    }
+    if len(out) < len(wanted):
+        result["next_page"] = wanted[len(out)]
+    return result
+
+
+@mcp.tool()
+def view_pdf_pages(course_id: int, file_id: int, pages: str) -> list[str | Image]:
+    """Images of up to 5 pages of a course PDF, like "3" or "4-6". Use for
+    diagrams, charts, worked examples and scanned pages that read_pdf can't
+    turn into text."""
+    f = _pdf(course_id, file_id)
+    wanted = parse_pages(pages, page_count(f.data))
+    if len(wanted) > MAX_PAGES_PER_VIEW:
+        raise ValueError(f"Ask for at most {MAX_PAGES_PER_VIEW} pages at a time.")
+    out: list[str | Image] = []
+    for number, png in zip(wanted, render_pages(f.data, wanted)):
+        out += [f"{f.name}, page {number}:", Image(data=png, format="png")]
+    return out
 
 
 # -- Calendar and scheduling -----------------------------------------------

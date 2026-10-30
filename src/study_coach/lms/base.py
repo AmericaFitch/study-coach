@@ -53,6 +53,22 @@ class Announcement(BaseModel):
     message: str
 
 
+class CourseFile(BaseModel):
+    """A file the course links from a module (Canvas hides the Files tab in some classes)."""
+
+    id: int
+    course_id: int
+    name: str
+    module: str
+
+
+class DownloadedFile(BaseModel):
+    id: int
+    name: str
+    content_type: str
+    data: bytes
+
+
 class LmsProvider(Protocol):
     def list_courses(self) -> list[Course]: ...
 
@@ -65,3 +81,7 @@ class LmsProvider(Protocol):
     def syllabus(self, course_id: int) -> str: ...
 
     def announcements(self, course_ids: list[int], days: int) -> list[Announcement]: ...
+
+    def module_files(self, course_id: int) -> list[CourseFile]: ...
+
+    def download_file(self, course_id: int, file_id: int) -> DownloadedFile: ...

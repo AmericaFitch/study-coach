@@ -16,6 +16,9 @@ Only Canvas is required. Calendar feeds, Notion and calendar booking are optiona
 | `get_submission_feedback` | Instructor comments and rubric scores |
 | `get_syllabus` | Syllabus as plain text |
 | `list_announcements` | Recent announcements |
+| `list_course_files` | Files linked from a course's Modules (works even when the Files tab is hidden) |
+| `read_pdf` | Text of a course PDF, page by page, without you uploading it |
+| `view_pdf_pages` | Images of PDF pages, for diagrams, charts and scanned handouts |
 | `get_calendar_events` | Events from your calendar feeds |
 | `get_availability` | Free study time after classes, work and events |
 | `propose_study_blocks` | Fits tasks into free time, earliest deadline first (a draft, nothing is booked) |

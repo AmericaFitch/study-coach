@@ -12,7 +12,13 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .base import Announcement, Assignment, Course, Feedback, GradedItem
+from .base import Announcement, Assignment, Course, CourseFile, DownloadedFile, Feedback, GradedItem
+
+# Only documents Study Coach can read are ever downloaded; videos, audio and
+# everything else are refused from their metadata, before any bytes move.
+DOWNLOADABLE_TYPES = {"application/pdf"}
+# Course PDFs are usually a few MB; this guards against an unusually huge one.
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\n\s*\n+")
@@ -194,3 +200,49 @@ class CanvasClient:
             )
             for a in raw
         ]
+
+    def module_files(self, course_id: int) -> list[CourseFile]:
+        # Files are listed through Modules because many classes block the Files tab (403).
+        modules = self._get_all(f"/courses/{course_id}/modules", [("include[]", "items")])
+        files = []
+        for m in modules:
+            # Canvas leaves out "items" when a module is too large to inline.
+            items = m.get("items")
+            if items is None:
+                items = self._get_all(f"/courses/{course_id}/modules/{m['id']}/items")
+            for item in items:
+                if item.get("type") == "File" and item.get("content_id"):
+                    files.append(
+                        CourseFile(
+                            id=item["content_id"],
+                            course_id=course_id,
+                            name=item.get("title", ""),
+                            module=m.get("name", ""),
+                        )
+                    )
+        return files
+
+    def download_file(self, course_id: int, file_id: int) -> DownloadedFile:
+        meta = self._get(f"/courses/{course_id}/files/{file_id}")
+        name = meta.get("display_name") or meta.get("filename") or str(file_id)
+        if meta.get("locked_for_user") or not meta.get("url"):
+            reason = meta.get("lock_explanation") or "the instructor hasn't made it available yet"
+            raise RuntimeError(f"{name} is locked: {html_to_text(reason)}")
+        content_type = meta.get("content-type", "")
+        if content_type not in DOWNLOADABLE_TYPES:
+            raise ValueError(f"{name} isn't a PDF ({content_type or 'unknown type'}), so it wasn't downloaded.")
+        if (meta.get("size") or 0) > MAX_DOWNLOAD_BYTES:
+            raise RuntimeError(f"{name} is too large to read ({meta['size'] // 2**20} MB).")
+        # The download link redirects to Canvas's file storage on another host;
+        # httpx drops the Authorization header on that cross-host hop.
+        with self._http.stream("GET", meta["url"], headers=self._headers, follow_redirects=True) as resp:
+            self._check(resp)
+            chunks, total = [], 0
+            for chunk in resp.iter_bytes():
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise RuntimeError(f"{name} is too large to read (over 50 MB).")
+                chunks.append(chunk)
+        return DownloadedFile(
+            id=file_id, name=name, content_type=content_type, data=b"".join(chunks)
+        )

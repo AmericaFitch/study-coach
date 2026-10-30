@@ -95,3 +95,79 @@ def test_expired_token_gives_helpful_error():
     client = make_client(lambda request: httpx.Response(401, json={"errors": [{"message": "Invalid access token."}]}))
     with pytest.raises(RuntimeError, match="New Access Token"):
         client.list_courses()
+
+
+def test_module_files_lists_files_and_fetches_items_canvas_left_out():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/modules"):
+            return httpx.Response(200, json=[
+                {"id": 1, "name": "Week 1", "items": [
+                    {"type": "File", "title": "Slides 1.pdf", "content_id": 11},
+                    {"type": "Page", "title": "Intro", "page_url": "intro"},
+                ]},
+                {"id": 2, "name": "Week 2"},  # big module: items must be fetched separately
+            ])
+        assert request.url.path.endswith("/modules/2/items")
+        return httpx.Response(200, json=[{"type": "File", "title": "Slides 2.pdf", "content_id": 22}])
+
+    files = make_client(handler).module_files(7)
+    assert [(f.id, f.module) for f in files] == [(11, "Week 1"), (22, "Week 2")]
+
+
+def test_download_follows_redirect_without_sending_token_to_file_host():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/files/11"):
+            return httpx.Response(200, json={
+                "display_name": "Slides.pdf", "content-type": "application/pdf", "size": 9,
+                "url": f"{BASE}/files/11/download?verifier=abc",
+            })
+        if request.url.host == "school.instructure.com":
+            return httpx.Response(302, headers={"Location": "https://files.example-cdn.com/11"})
+        seen["file_host_auth"] = request.headers.get("Authorization")
+        return httpx.Response(200, content=b"%PDF-1.4 ")
+
+    f = make_client(handler).download_file(7, 11)
+    assert f.data == b"%PDF-1.4 " and f.name == "Slides.pdf"
+    assert seen["file_host_auth"] is None
+
+
+def test_locked_file_says_why():
+    import pytest
+
+    client = make_client(lambda request: httpx.Response(200, json={
+        "display_name": "Exam key.pdf", "locked_for_user": True,
+        "lock_explanation": "This file is locked until <b>Dec 1</b>.",
+    }))
+    with pytest.raises(RuntimeError, match="locked until Dec 1"):
+        client.download_file(7, 11)
+
+
+def test_videos_are_never_downloaded():
+    import pytest
+
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(200, json={
+            "display_name": "Lecture 4.mp4", "content-type": "video/mp4", "size": 10, "url": f"{BASE}/files/11/download",
+        })
+
+    with pytest.raises(ValueError, match="Lecture 4.mp4 isn't a PDF"):
+        make_client(handler).download_file(7, 11)
+    assert requested == ["/api/v1/courses/7/files/11"]  # metadata only, no download
+
+
+def test_oversized_download_is_refused():
+    import pytest
+
+    from study_coach.lms import canvas
+
+    client = make_client(lambda request: httpx.Response(200, json={
+        "display_name": "Huge scan.pdf", "content-type": "application/pdf",
+        "size": canvas.MAX_DOWNLOAD_BYTES + 1, "url": f"{BASE}/x",
+    }))
+    with pytest.raises(RuntimeError, match="too large"):
+        client.download_file(7, 11)

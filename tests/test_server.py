@@ -38,6 +38,61 @@ def test_canvas_tools_explain_missing_token():
         server.list_courses()
 
 
+@pytest.fixture
+def course_pdf(monkeypatch):
+    """Serve a fake Canvas file to the PDF tools, counting downloads."""
+    from pdf_samples import text_pdf
+
+    from study_coach.lms.base import DownloadedFile
+
+    calls = []
+
+    class FakeCanvas:
+        def download_file(self, course_id, file_id):
+            calls.append(file_id)
+            pages = [f"Page {n} about joins" for n in range(1, 4)]
+            if file_id == 2:
+                raise ValueError("Syllabus.docx isn't a PDF (application/msword), so it wasn't downloaded.")
+            return DownloadedFile(id=file_id, name="Joins.pdf", content_type="application/pdf", data=text_pdf(*pages))
+
+    monkeypatch.setattr(server, "_canvas", lambda cfg: FakeCanvas())
+    monkeypatch.setattr(server, "_files", {})
+    return calls
+
+
+def test_read_pdf_returns_requested_pages(course_pdf):
+    result = server.read_pdf(course_id=7, file_id=1, pages="2-3")
+    assert result["page_count"] == 3
+    assert [p["text"] for p in result["pages"]] == ["Page 2 about joins", "Page 3 about joins"]
+    assert result["pages_with_little_text"] == [2, 3]
+
+
+def test_long_pdf_text_stops_early_and_says_where_to_continue(course_pdf, monkeypatch):
+    monkeypatch.setattr(server, "PDF_TEXT_BUDGET", 30)
+    result = server.read_pdf(course_id=7, file_id=1)
+    assert [p["page"] for p in result["pages"]] == [1]
+    assert result["next_page"] == 2
+
+
+def test_viewing_pages_after_reading_reuses_the_download(course_pdf):
+    server.read_pdf(course_id=7, file_id=1)
+    content = server.view_pdf_pages(course_id=7, file_id=1, pages="1")
+    assert content[0] == "Joins.pdf, page 1:"
+    assert isinstance(content[1], server.Image)
+    assert course_pdf == [1]
+
+
+def test_view_pdf_pages_limits_pages_per_call(course_pdf, monkeypatch):
+    monkeypatch.setattr(server, "MAX_PAGES_PER_VIEW", 2)
+    with pytest.raises(ValueError, match="at most 2"):
+        server.view_pdf_pages(course_id=7, file_id=1, pages="1-3")
+
+
+def test_non_pdf_file_is_rejected_by_name(course_pdf):
+    with pytest.raises(ValueError, match="Syllabus.docx isn't a PDF"):
+        server.read_pdf(course_id=7, file_id=2)
+
+
 def test_secret_urls_are_not_written_to_the_log(caplog):
     import logging
 

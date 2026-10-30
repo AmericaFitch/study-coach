@@ -12,6 +12,9 @@ dependencies = [
     "pyyaml>=6.0",
     "icalendar>=5.0",
     "recurring-ical-events>=2.2",
+    # Reading course PDFs: text extraction and rendering pages as images.
+    "pypdfium2>=4.30",
+    "pillow>=10.0",
     # Windows has no built-in time zone database for zoneinfo to read.
     "tzdata; sys_platform == 'win32'",
 ]

@@ -6,3 +6,6 @@ dist/
 config.yaml
 .env
 .DS_Store
+
+# Private Claude Code working notes
+CLAUDE.md
