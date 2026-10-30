@@ -24,6 +24,7 @@ read the test to see the bug pinned down.
 | 15 | `init` printed a command Claude can't run | High | Checking item 14 | `test_server_command_is_an_absolute_path_next_to_python` |
 | 16 | Server wouldn't start from an iCloud folder | High | Checking item 15 | Manual (`import study_coach` works) |
 | 17 | Secret URLs written to Claude Desktop's log | High | Live test of PDF reading | `test_secret_urls_are_not_written_to_the_log` |
+| 18 | `read_pdf(pages=1)` rejected a page number | Medium | Using it in Claude Desktop | `test_single_page_sent_as_a_number_works` |
 
 ---
 
@@ -251,6 +252,30 @@ logged 0 request lines afterward.
 
 **Lesson:** found by watching the output of a real run, not by the tests.
 Check what your program writes to logs, not just what it returns.
+
+## 18. Asking for one PDF page by number failed
+
+**What you'd see:** Claude asked `read_pdf` for page 1 and got
+`Input should be a valid string`. Asking for `"1-1"` worked.
+
+**Why:** the tool's `pages` parameter was declared as text (`str`), for
+ranges like `"1-3,7"`. When Claude wants a single page it often sends a plain
+JSON number, `1`, instead of the string `"1"`. The MCP SDK checks arguments
+against the declared types (with Pydantic) and refuses to turn a number into
+text on its own, so the call never reached our code.
+
+**Fix:** declare `pages` as `int | str | None` in `read_pdf` and
+`view_pdf_pages`, and have `parse_pages()` in
+[`pdf.py`](src/study_coach/documents/pdf.py) convert it with `str()`. It also
+now checks `spec is None` instead of `not spec`, so `pages=0` reports
+"Pages 0 don't exist" instead of quietly meaning "every page".
+
+**Verified by:** a test that calls both tools through the real MCP layer with
+a number, the same way Claude Desktop does. Calling the Python function
+directly would have hidden the bug, because Python doesn't check types.
+
+**Lesson:** a tool's parameter types are a contract with the model. Accept the
+reasonable shapes it actually sends, not just the one you had in mind.
 
 ---
 

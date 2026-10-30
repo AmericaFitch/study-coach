@@ -156,8 +156,8 @@ def list_course_files(course_id: int) -> list[dict]:
 
 
 @mcp.tool()
-def read_pdf(course_id: int, file_id: int, pages: str | None = None) -> dict:
-    """Text of a course PDF, page by page. `pages` is like "1-5,9" (default:
+def read_pdf(course_id: int, file_id: int, pages: int | str | None = None) -> dict:
+    """Text of a course PDF, page by page. `pages` is like 3 or "1-5,9" (default:
     all pages, stopping early if the text gets long; continue from `next_page`).
 
     Pages listed in `pages_with_little_text` are probably diagrams or scans:
@@ -185,8 +185,8 @@ def read_pdf(course_id: int, file_id: int, pages: str | None = None) -> dict:
 
 
 @mcp.tool()
-def view_pdf_pages(course_id: int, file_id: int, pages: str) -> list[str | Image]:
-    """Images of up to 5 pages of a course PDF, like "3" or "4-6". Use for
+def view_pdf_pages(course_id: int, file_id: int, pages: int | str) -> list[str | Image]:
+    """Images of up to 5 pages of a course PDF, like 3 or "4-6". Use for
     diagrams, charts, worked examples and scanned pages that read_pdf can't
     turn into text."""
     f = _pdf(course_id, file_id)

@@ -31,9 +31,10 @@ def test_rendered_pages_fit_claudes_image_size():
 def test_page_ranges_are_one_based_and_deduplicated():
     assert parse_pages("1-3, 2, 7", 10) == [1, 2, 3, 7]
     assert parse_pages(None, 3) == [1, 2, 3]
+    assert parse_pages(2, 3) == [2]
 
 
-@pytest.mark.parametrize("spec", ["0", "4", "3-1", "two"])
+@pytest.mark.parametrize("spec", ["0", 0, "4", 4, "3-1", "two"])
 def test_bad_page_ranges_explain_themselves(spec):
     with pytest.raises(ValueError, match="page"):
         parse_pages(spec, 3)

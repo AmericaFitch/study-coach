@@ -103,3 +103,12 @@ def test_secret_urls_are_not_written_to_the_log(caplog):
     client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
     client.get(secret)
     assert "private-abc123" not in caplog.text
+
+
+def test_single_page_sent_as_a_number_works(course_pdf):
+    # MCP clients send pages=1 as a JSON number, not the string "1".
+    import asyncio
+
+    asyncio.run(server.mcp.call_tool("read_pdf", {"course_id": 7, "file_id": 1, "pages": 1}))
+    asyncio.run(server.mcp.call_tool("view_pdf_pages", {"course_id": 7, "file_id": 1, "pages": 2}))
+    assert [p["page"] for p in server.read_pdf(course_id=7, file_id=1, pages=3)["pages"]] == [3]

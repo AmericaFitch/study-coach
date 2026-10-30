@@ -50,16 +50,17 @@ def page_count(data: bytes) -> int:
         doc.close()
 
 
-def parse_pages(spec: str | None, count: int) -> list[int]:
+def parse_pages(spec: int | str | None, count: int) -> list[int]:
     """Turn "1-3, 7" into [1, 2, 3, 7] (1-based, as people count pages).
 
-    None means every page. Raises ValueError for pages that don't exist, so
+    A single page may arrive as a number (3) rather than text ("3"). None
+    means every page. Raises ValueError for pages that don't exist, so
     Claude learns the real page count instead of getting a silent empty result.
     """
-    if not spec:
+    if spec is None or spec == "":
         return list(range(1, count + 1))
     pages: list[int] = []
-    for part in spec.replace(" ", "").split(","):
+    for part in str(spec).replace(" ", "").split(","):
         if not part:
             continue
         try:
