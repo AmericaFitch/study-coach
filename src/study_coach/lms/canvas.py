@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
@@ -112,10 +113,27 @@ def file_links(raw: str | None, course_id: int) -> list[Attachment]:
     return list(seen.values())
 
 
+def _skip_hidden(fetch, default):
+    """Run fetch(), returning default if Canvas hides (403) or has turned off
+    (404) that part of the course. The student can't see it either."""
+    try:
+        return fetch()
+    except CanvasAccessDenied:
+        return default
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return default
+        raise
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class CanvasAccessDenied(RuntimeError):
+    """403: this part of the course is hidden from the student."""
 
 
 class CanvasClient:
@@ -139,7 +157,7 @@ class CanvasClient:
                 "under Account -> Settings -> New Access Token and update CANVAS_TOKEN."
             )
         if resp.status_code == 403:
-            raise RuntimeError(f"Canvas denied access to {resp.request.url.path} (403).")
+            raise CanvasAccessDenied(f"Canvas denied access to {resp.request.url.path} (403).")
         resp.raise_for_status()
 
     def _get(self, path: str, params: dict | list | None = None) -> dict:
@@ -329,13 +347,50 @@ class CanvasClient:
             attachments=file_links(p.get("body"), course_id) or None,
         )
 
-    def module_files(self, course_id: int) -> list[CourseFile]:
-        # Files are listed through Modules because many classes block the Files tab (403).
-        return [
-            CourseFile(id=item["content_id"], course_id=course_id, name=item.get("title", ""), module=module)
-            for module, item in self._module_items(course_id)
-            if item.get("type") == "File" and item.get("content_id")
-        ]
+    def course_files(self, course_id: int) -> list[CourseFile]:
+        """Every file the course links, from Modules, the syllabus, assignments
+        (past and future), pages and announcements, each listed once.
+
+        The Files tab is blocked in many classes, and most files are only
+        linked from inside other content, so all of it has to be read.
+        """
+        found: dict[int, CourseFile] = {}
+
+        def add(file_id: int, name: str, source: str, link_course: int | None = None) -> None:
+            f = found.get(file_id)
+            if f is None:
+                found[file_id] = CourseFile(
+                    id=file_id, course_id=link_course or course_id, name=name, sources=[source]
+                )
+            elif source not in f.sources:
+                f.sources.append(source)
+
+        def add_links(links: list[Attachment], source: str) -> None:
+            for a in links:
+                add(a.id, a.name, source, a.course_id)
+
+        # Modules come first because their item titles are the best file names.
+        modules = _skip_hidden(lambda: self._module_items(course_id), [])
+        for module, item in modules:
+            if item.get("type") == "File" and item.get("content_id"):
+                add(item["content_id"], item.get("title", ""), f"Module: {module}")
+        add_links(_skip_hidden(lambda: self.syllabus(course_id).attachments, None) or [], "Syllabus")
+        for a in _skip_hidden(lambda: self._get_all(f"/courses/{course_id}/assignments"), []):
+            add_links(file_links(a.get("description"), course_id), f"Assignment: {a.get('name', '')}")
+        page_urls = list(dict.fromkeys(
+            i["page_url"] for _, i in modules if i.get("type") == "Page" and i.get("page_url")
+        ))
+        # One request per page; courses with 30+ pages took over 10 s one at a time.
+        # map() keeps course order, and httpx clients are safe to share across threads.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            pages = pool.map(lambda url: _skip_hidden(lambda: self.page(course_id, url), None), page_urls)
+            for page in list(pages):
+                if page:
+                    add_links(page.attachments or [], f"Page: {page.title}")
+        # About a school year back, so last term's posts in a long course still count.
+        for post in _skip_hidden(lambda: self.announcements([course_id], days=365), []):
+            add_links(post.attachments or [], f"Announcement: {post.title}")
+        return list(found.values())
 
     def download_file(self, course_id: int, file_id: int) -> DownloadedFile:
         meta = self._get(f"/courses/{course_id}/files/{file_id}")

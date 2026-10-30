@@ -166,9 +166,13 @@ def get_course_page(course_id: int, page_url: str) -> dict:
 
 @mcp.tool()
 def list_course_files(course_id: int) -> list[dict]:
-    """Files linked from a course's Modules (slides, readings, handouts), with
-    the module each is in. Use a file's id with read_pdf or view_pdf_pages."""
-    return _dump(_canvas(_config()).module_files(course_id))
+    """Every file a course links (slides, readings, handouts, starter code),
+    from Modules, the syllabus, assignments (past and future), pages and
+    announcements. Each file appears once; `sources` says where it's linked,
+    e.g. "Assignment: Assignment 6". Open PDFs with read_pdf or
+    view_pdf_pages, using the file's own course_id. Can take several seconds
+    for a course with many pages."""
+    return _dump(_canvas(_config()).course_files(course_id))
 
 
 @mcp.tool()

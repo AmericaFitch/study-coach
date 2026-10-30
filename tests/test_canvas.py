@@ -97,21 +97,70 @@ def test_expired_token_gives_helpful_error():
         client.list_courses()
 
 
-def test_module_files_lists_files_and_fetches_items_canvas_left_out():
+def fake_course(routes: dict):
+    """A Canvas handler answering by path suffix; anything unlisted is empty."""
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/modules"):
-            return httpx.Response(200, json=[
-                {"id": 1, "name": "Week 1", "items": [
-                    {"type": "File", "title": "Slides 1.pdf", "content_id": 11},
-                    {"type": "Page", "title": "Intro", "page_url": "intro"},
-                ]},
-                {"id": 2, "name": "Week 2"},  # big module: items must be fetched separately
-            ])
-        assert request.url.path.endswith("/modules/2/items")
-        return httpx.Response(200, json=[{"type": "File", "title": "Slides 2.pdf", "content_id": 22}])
+        for suffix, reply in routes.items():
+            if request.url.path.endswith(suffix):
+                return reply if isinstance(reply, httpx.Response) else httpx.Response(200, json=reply)
+        return httpx.Response(200, json={} if "/pages/" in request.url.path or request.url.path.endswith("/7") else [])
+    return handler
 
-    files = make_client(handler).module_files(7)
-    assert [(f.id, f.module) for f in files] == [(11, "Week 1"), (22, "Week 2")]
+
+def test_module_files_are_listed_and_big_modules_fetched_separately():
+    handler = fake_course({
+        "/modules": [
+            {"id": 1, "name": "Week 1", "items": [
+                {"type": "File", "title": "Slides 1.pdf", "content_id": 11},
+                {"type": "SubHeader", "title": "Readings"},
+            ]},
+            {"id": 2, "name": "Week 2"},  # big module: Canvas leaves its items out
+        ],
+        "/modules/2/items": [{"type": "File", "title": "Slides 2.pdf", "content_id": 22}],
+    })
+    files = make_client(handler).course_files(7)
+    assert [(f.id, f.sources) for f in files] == [(11, ["Module: Week 1"]), (22, ["Module: Week 2"])]
+
+
+def test_course_files_gathers_every_source_once_with_tags():
+    link = lambda file_id, name: f'<a href="{BASE}/courses/7/files/{file_id}">{name}</a>'
+    handler = fake_course({
+        "/modules": [{"id": 1, "name": "Week 6", "items": [
+            {"type": "File", "title": "Assignment 6.pdf", "content_id": 60},
+            {"type": "Page", "title": "Lab notes", "page_url": "lab-notes"},
+        ]}],
+        "/courses/7": {"syllabus_body": link(1, "Schedule.pdf")},
+        "/assignments": [
+            {"id": 5, "name": "Assignment 5", "description": link(50, "A5.pdf")},  # past: no due-date filter
+            {"id": 6, "name": "Assignment 6", "description": link(60, "A6 handout")},
+        ],
+        "/pages/lab-notes": {"title": "Lab notes", "body": link(70, "Lab.java")
+                             + f'<a href="{BASE}/courses/3/files/80">Shared rubric</a>'},
+        "/announcements": [{"context_code": "course_7", "title": "Exam review", "message": link(50, "A5 again")}],
+    })
+    files = {f.id: f for f in make_client(handler).course_files(7)}
+    assert files[60].name == "Assignment 6.pdf"  # the module title wins
+    assert files[60].sources == ["Module: Week 6", "Assignment: Assignment 6"]
+    assert files[50].sources == ["Assignment: Assignment 5", "Announcement: Exam review"]
+    assert files[1].sources == ["Syllabus"] and files[70].sources == ["Page: Lab notes"]
+    assert files[80].course_id == 3  # read_pdf must ask the other course for it
+
+
+def test_course_files_skips_parts_of_a_course_canvas_hides():
+    handler = fake_course({
+        "/modules": httpx.Response(403),
+        "/courses/7": httpx.Response(404),
+        "/assignments": [{"id": 5, "name": "Assignment 5",
+                          "description": f'<a href="{BASE}/courses/7/files/50">A5.pdf</a>'}],
+    })
+    assert [f.id for f in make_client(handler).course_files(7)] == [50]
+
+
+def test_course_files_still_reports_an_expired_token():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="New Access Token"):
+        make_client(lambda request: httpx.Response(401)).course_files(7)
 
 
 def test_download_follows_redirect_without_sending_token_to_file_host():

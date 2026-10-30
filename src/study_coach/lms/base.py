@@ -82,12 +82,13 @@ class CoursePage(BaseModel):
 
 
 class CourseFile(BaseModel):
-    """A file the course links from a module (Canvas hides the Files tab in some classes)."""
+    """A course file, found wherever the course links it (the Files tab is often hidden)."""
 
     id: int
     course_id: int
     name: str
-    module: str
+    # Where it's linked, e.g. ["Module: Week 3", "Assignment: Assignment 6"].
+    sources: list[str]
 
 
 class DownloadedFile(BaseModel):
@@ -114,6 +115,6 @@ class LmsProvider(Protocol):
 
     def page(self, course_id: int, page_url: str) -> CoursePage: ...
 
-    def module_files(self, course_id: int) -> list[CourseFile]: ...
+    def course_files(self, course_id: int) -> list[CourseFile]: ...
 
     def download_file(self, course_id: int, file_id: int) -> DownloadedFile: ...
