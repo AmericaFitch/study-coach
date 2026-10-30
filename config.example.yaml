@@ -1,0 +1,32 @@
+# Copy to ~/.study-coach/config.yaml (or run `study-coach init`).
+# Your Canvas token is NOT stored here -- set the CANVAS_TOKEN environment variable.
+
+timezone: America/Chicago
+
+lms:
+  provider: canvas
+  base_url: https://yourschool.instructure.com
+
+# Optional. Private iCal/ICS feed URLs used to find your free time.
+# Google Calendar: Settings -> your calendar -> "Secret address in iCal format".
+# Canvas: Calendar -> "Calendar Feed".
+calendar_feeds: []
+
+schedule:
+  study_start: "09:00"
+  study_end: "23:00"
+  max_block_minutes: 90
+  break_minutes: 15
+  min_block_minutes: 30
+  blackouts:
+    - days: [tue, thu]
+      start: "17:00"
+      end: "21:00"
+      label: work
+
+# Optional per-course personalization. Course ids come from the list_courses tool.
+courses: []
+#  - id: 12345
+#    nickname: Regression
+#    difficulty: high   # low | medium | high
+#    notes: "Struggle with interpreting interaction terms"

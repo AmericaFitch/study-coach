@@ -1,0 +1,196 @@
+"""Read-only Canvas LMS client.
+
+Canvas paginates list endpoints and puts the next page's URL in the HTTP
+`Link` header; `_get_all` follows it so no results are silently dropped.
+"""
+
+from __future__ import annotations
+
+import html
+import re
+from datetime import datetime, timedelta, timezone
+
+import httpx
+
+from .base import Announcement, Assignment, Course, Feedback, GradedItem
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\n\s*\n+")
+
+
+def html_to_text(raw: str | None, limit: int | None = None) -> str:
+    """Strip HTML so Claude gets readable text instead of markup."""
+    if not raw:
+        return ""
+    text = re.sub(r"<(br|/p|/li|/h\d)\s*/?>", "\n", raw, flags=re.I)
+    text = html.unescape(_TAG_RE.sub("", text))
+    text = _WS_RE.sub("\n\n", text).strip()
+    if limit and len(text) > limit:
+        text = text[:limit].rstrip() + " ..."
+    return text
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class CanvasClient:
+    def __init__(self, base_url: str, token: str, client: httpx.Client | None = None):
+        if not base_url:
+            raise ValueError("Canvas base_url is not configured. Run `study-coach init`.")
+        self.base_url = base_url.rstrip("/")
+        self._http = client or httpx.Client(timeout=20.0)
+        self._headers = {"Authorization": f"Bearer {token}"}
+
+    # -- HTTP helpers -------------------------------------------------------
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}/api/v1{path}"
+
+    @staticmethod
+    def _check(resp: httpx.Response) -> None:
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "Canvas rejected the token (401). It may be expired or revoked -- create a new one "
+                "under Account -> Settings -> New Access Token and update CANVAS_TOKEN."
+            )
+        if resp.status_code == 403:
+            raise RuntimeError(f"Canvas denied access to {resp.request.url.path} (403).")
+        resp.raise_for_status()
+
+    def _get(self, path: str, params: dict | list | None = None) -> dict:
+        resp = self._http.get(self._url(path), params=params, headers=self._headers)
+        self._check(resp)
+        return resp.json()
+
+    def _get_all(self, path: str, params: list[tuple[str, str]] | None = None) -> list[dict]:
+        params = list(params or []) + [("per_page", "100")]
+        resp = self._http.get(self._url(path), params=params, headers=self._headers)
+        self._check(resp)
+        items = list(resp.json())
+        while "next" in resp.links:
+            resp = self._http.get(resp.links["next"]["url"], headers=self._headers)
+            self._check(resp)
+            items.extend(resp.json())
+        return items
+
+    # -- LmsProvider --------------------------------------------------------
+
+    def list_courses(self) -> list[Course]:
+        raw = self._get_all(
+            "/courses",
+            # state[]=available drops past-term courses that were never formally concluded.
+            [("enrollment_state", "active"), ("state[]", "available"), ("include[]", "total_scores")],
+        )
+        courses = []
+        for c in raw:
+            if "name" not in c:  # restricted/concluded courses come back as stubs
+                continue
+            enrollment = next(iter(c.get("enrollments") or []), {})
+            courses.append(
+                Course(
+                    id=c["id"],
+                    name=c["name"],
+                    code=c.get("course_code"),
+                    current_score=enrollment.get("computed_current_score"),
+                    current_grade=enrollment.get("computed_current_grade"),
+                )
+            )
+        return courses
+
+    def upcoming_assignments(self, days: int = 7) -> list[Assignment]:
+        now = datetime.now(timezone.utc)
+        cutoff = now + timedelta(days=days)
+        results = []
+        for course in self.list_courses():
+            raw = self._get_all(
+                f"/courses/{course.id}/assignments",
+                [("bucket", "future"), ("order_by", "due_at"), ("include[]", "submission")],
+            )
+            for a in raw:
+                due = _parse_dt(a.get("due_at"))
+                if due is None or not (now <= due <= cutoff):
+                    continue
+                submission = a.get("submission") or {}
+                results.append(
+                    Assignment(
+                        id=a["id"],
+                        course_id=course.id,
+                        name=a["name"],
+                        due_at=due,
+                        points_possible=a.get("points_possible"),
+                        submitted=submission.get("workflow_state") in {"submitted", "graded"},
+                        description=html_to_text(a.get("description"), limit=600),
+                        url=a.get("html_url"),
+                    )
+                )
+        return sorted(results, key=lambda a: a.due_at)
+
+    def grades(self, course_id: int) -> list[GradedItem]:
+        raw = self._get_all(
+            f"/courses/{course_id}/assignments", [("include[]", "submission")]
+        )
+        items = []
+        for a in raw:
+            sub = a.get("submission") or {}
+            score = sub.get("score")
+            if score is None:
+                continue
+            possible = a.get("points_possible")
+            items.append(
+                GradedItem(
+                    assignment_id=a["id"],
+                    course_id=course_id,
+                    name=a["name"],
+                    score=score,
+                    points_possible=possible,
+                    percent=round(100 * score / possible, 1) if possible else None,
+                    graded_at=_parse_dt(sub.get("graded_at")),
+                )
+            )
+        return sorted(items, key=lambda g: g.graded_at or datetime.min.replace(tzinfo=timezone.utc))
+
+    def feedback(self, course_id: int, assignment_id: int) -> Feedback:
+        sub = self._get(
+            f"/courses/{course_id}/assignments/{assignment_id}/submissions/self",
+            [("include[]", "submission_comments"), ("include[]", "rubric_assessment")],
+        )
+        comments = [
+            c.get("comment", "") for c in sub.get("submission_comments") or [] if c.get("comment")
+        ]
+        rubric = [
+            {"criterion": k, "points": v.get("points"), "comment": v.get("comments") or None}
+            for k, v in (sub.get("rubric_assessment") or {}).items()
+        ]
+        return Feedback(
+            assignment_id=assignment_id,
+            course_id=course_id,
+            score=sub.get("score"),
+            comments=comments,
+            rubric=rubric,
+        )
+
+    def syllabus(self, course_id: int) -> str:
+        course = self._get(f"/courses/{course_id}", [("include[]", "syllabus_body")])
+        return html_to_text(course.get("syllabus_body")) or "No syllabus posted in Canvas."
+
+    def announcements(self, course_ids: list[int], days: int = 14) -> list[Announcement]:
+        if not course_ids:
+            return []
+        now = datetime.now(timezone.utc)
+        params = [("context_codes[]", f"course_{cid}") for cid in course_ids]
+        params.append(("start_date", (now - timedelta(days=days)).date().isoformat()))
+        # Without end_date Canvas stops 28 days after start_date, hiding recent posts.
+        params.append(("end_date", (now + timedelta(days=1)).date().isoformat()))
+        raw = self._get_all("/announcements", params)
+        return [
+            Announcement(
+                course_id=int(a.get("context_code", "course_0").split("_")[-1]),
+                title=a.get("title", ""),
+                posted_at=_parse_dt(a.get("posted_at")),
+                message=html_to_text(a.get("message"), limit=1000),
+            )
+            for a in raw
+        ]
