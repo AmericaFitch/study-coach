@@ -53,6 +53,16 @@ class Announcement(BaseModel):
     message: str
 
 
+class Attachment(BaseModel):
+    """A Canvas file linked from an assignment, page, syllabus or announcement."""
+
+    id: int
+    name: str
+    # Only set when the link points at another course's file, so read_pdf can
+    # ask Canvas for it in the right place.
+    course_id: int | None = None
+
+
 class CourseFile(BaseModel):
     """A file the course links from a module (Canvas hides the Files tab in some classes)."""
 

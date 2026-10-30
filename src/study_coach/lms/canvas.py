@@ -9,10 +9,11 @@ from __future__ import annotations
 import html
 import re
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 
 import httpx
 
-from .base import Announcement, Assignment, Course, CourseFile, DownloadedFile, Feedback, GradedItem
+from .base import Announcement, Assignment, Attachment, Course, CourseFile, DownloadedFile, Feedback, GradedItem
 
 # Only documents Study Coach can read are ever downloaded; videos, audio and
 # everything else are refused from their metadata, before any bytes move.
@@ -34,6 +35,70 @@ def html_to_text(raw: str | None, limit: int | None = None) -> str:
     if limit and len(text) > limit:
         text = text[:limit].rstrip() + " ..."
     return text
+
+
+# Matches /courses/1/files/2 and /api/v1/courses/1/files/2, with or without
+# the host and with any suffix (/download, /preview, ?verifier=...).
+_FILE_URL_RE = re.compile(r"/(?:api/v1/)?courses/(\d+)/files/(\d+)")
+
+
+class _FileLinkParser(HTMLParser):
+    """Collects (course id, file id, name) from <a> and <img> tags."""
+
+    def __init__(self):
+        super().__init__()  # convert_charrefs=True decodes &amp; in text and attributes
+        self.links: list[tuple[int, int, str]] = []
+        self._open: list | None = None  # the <a> being read: [course, file, title, text parts]
+
+    @staticmethod
+    def _match(attrs: dict) -> tuple[int, int] | None:
+        # Canvas puts the API URL in data-api-endpoint and a page URL in href;
+        # either one is enough.
+        for key in ("data-api-endpoint", "href", "src"):
+            m = _FILE_URL_RE.search(attrs.get(key) or "")
+            if m:
+                return int(m.group(1)), int(m.group(2))
+        return None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        found = self._match(attrs)
+        if tag == "a" and found:
+            self._open = [*found, attrs.get("title") or "", []]
+        elif tag == "img" and found:
+            self.links.append((*found, attrs.get("alt") or attrs.get("title") or ""))
+
+    def handle_data(self, data):
+        if self._open:
+            self._open[3].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._open:
+            course, file, title, text = self._open
+            self.links.append((course, file, " ".join("".join(text).split()) or title))
+            self._open = None
+
+
+def file_links(raw: str | None, course_id: int) -> list[Attachment]:
+    """Canvas files linked from HTML, in order, once each.
+
+    Must run on the original HTML: html_to_text keeps a link's words but drops
+    where it points, which is how course files went missing before.
+    """
+    if not raw:
+        return []
+    parser = _FileLinkParser()
+    parser.feed(raw)
+    parser.close()
+    seen: dict[int, Attachment] = {}
+    for link_course, file_id, name in parser.links:
+        if file_id not in seen:
+            seen[file_id] = Attachment(
+                id=file_id,
+                name=name or f"file {file_id}",
+                course_id=link_course if link_course != course_id else None,
+            )
+    return list(seen.values())
 
 
 def _parse_dt(value: str | None) -> datetime | None:
